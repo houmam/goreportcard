@@ -15,17 +15,22 @@ var googleAnalyticsKey = flag.String("google_analytics_key", "UA-58936835-1", "G
 // ReportHandler handles the report page
 func ReportHandler(w http.ResponseWriter, r *http.Request, repo string, dev bool) {
 	log.Printf("Displaying report: %q", repo)
-	t := template.Must(template.New("report.html").Delims("[[", "]]").ParseFiles("templates/report.html"))
+	t := template.Must(template.New("report.html").Delims("[[", "]]").ParseFiles("templates/report.html", "templates/footer.html"))
 	resp, err := getFromCache(repo)
 	needToLoad := false
 	if err != nil {
-		log.Println("ERROR:", err) // log error, but continue
+		switch err.(type) {
+		case notFoundError:
+			// don't bother logging - we already log in getFromCache. continue
+		default:
+			log.Println("ERROR ReportHandler:", err) // log error, but continue
+		}
 		needToLoad = true
 	}
 
 	respBytes, err := json.Marshal(resp)
 	if err != nil {
-		log.Println("ERROR: marshaling json: ", err)
+		log.Println("ERROR ReportHandler: could not marshal JSON: ", err)
 		http.Error(w, "Failed to load cache object", 500)
 		return
 	}

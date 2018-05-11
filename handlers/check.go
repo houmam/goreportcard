@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/boltdb/bolt"
 	"github.com/gojp/goreportcard/download"
@@ -32,118 +31,19 @@ func CheckHandler(w http.ResponseWriter, r *http.Request) {
 	repo, err := download.Clean(r.FormValue("repo"))
 	if err != nil {
 		log.Println("ERROR: from download.Clean:", err)
-		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`Could not download the repository: ` + err.Error()))
+		http.Error(w, "Could not download the repository: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	log.Printf("Checking repo %q...", repo)
 
 	forceRefresh := r.Method != "GET" // if this is a GET request, try to fetch from cached version in boltdb first
-	resp, err := newChecksResp(repo, forceRefresh)
+	_, err = newChecksResp(repo, forceRefresh)
 	if err != nil {
 		log.Println("ERROR: from newChecksResp:", err)
-		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`Could not download the repository.`))
+		http.Error(w, "Could not analyze the repository: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-
-	respBytes, err := json.Marshal(resp)
-	if err != nil {
-		log.Println("ERROR: could not marshal json:", err)
-		http.Error(w, err.Error(), 500)
-		return
-	}
-
-	// write to boltdb
-	db, err := bolt.Open(DBPath, 0755, &bolt.Options{Timeout: 1 * time.Second})
-	if err != nil {
-		log.Println("Failed to open bolt database: ", err)
-		return
-	}
-	defer db.Close()
-
-	// is this a new repo? if so, increase the count in the high scores bucket later
-	isNewRepo := false
-	var oldRepoBytes []byte
-	err = db.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte(RepoBucket))
-		if b == nil {
-			return fmt.Errorf("repo bucket not found")
-		}
-		oldRepoBytes = b.Get([]byte(repo))
-		return nil
-	})
-	if err != nil {
-		log.Println(err)
-	}
-
-	// get the old score and store it for stats updating
-	var oldScore *float64
-	if isNewRepo = oldRepoBytes == nil; !isNewRepo {
-		oldRepo := checksResp{}
-		err = json.Unmarshal(oldRepoBytes, &oldRepo)
-		if err != nil {
-			log.Println("ERROR: could not unmarshal json:", err)
-			http.Error(w, err.Error(), 500)
-			return
-		}
-		oldScore = &oldRepo.Average
-	}
-
-	// if this is a new repo, or the user force-refreshed, update the cache
-	if isNewRepo || forceRefresh {
-		err = db.Update(func(tx *bolt.Tx) error {
-			log.Printf("Saving repo %q to cache...", repo)
-
-			b := tx.Bucket([]byte(RepoBucket))
-			if b == nil {
-				return fmt.Errorf("repo bucket not found")
-			}
-
-			// save repo to cache
-			err = b.Put([]byte(repo), respBytes)
-			if err != nil {
-				return err
-			}
-
-			// fetch meta-bucket
-			mb := tx.Bucket([]byte(MetaBucket))
-			if mb == nil {
-				return fmt.Errorf("high score bucket not found")
-			}
-
-			// update total repos count
-			if isNewRepo {
-				err = updateReposCount(mb, resp, repo)
-				if err != nil {
-					return err
-				}
-			}
-
-			err = updateHighScores(mb, resp, repo)
-			if err != nil {
-				return err
-			}
-
-			return updateStats(mb, resp, repo, oldScore)
-		})
-
-		if err != nil {
-			log.Println("Bolt writing error:", err)
-		}
-
-	}
-
-	err = db.Update(func(tx *bolt.Tx) error {
-		// fetch meta-bucket
-		mb := tx.Bucket([]byte(MetaBucket))
-		if mb == nil {
-			return fmt.Errorf("meta bucket not found")
-		}
-
-		return updateRecentlyViewed(mb, repo)
-	})
 
 	b, err := json.Marshal(map[string]string{"redirect": "/report/" + repo})
 	if err != nil {
@@ -164,9 +64,9 @@ func updateHighScores(mb *bolt.Bucket, resp checksResp, repo string) error {
 	// start updating high score list
 	scoreBytes := mb.Get([]byte("scores"))
 	if scoreBytes == nil {
-		scoreBytes, _ = json.Marshal([]scoreHeap{})
+		scoreBytes, _ = json.Marshal([]ScoreHeap{})
 	}
-	scores := &scoreHeap{}
+	scores := &ScoreHeap{}
 	json.Unmarshal(scoreBytes, scores)
 
 	heap.Init(scores)
@@ -204,32 +104,7 @@ func updateHighScores(mb *bolt.Bucket, resp checksResp, repo string) error {
 	return nil
 }
 
-func updateStats(mb *bolt.Bucket, resp checksResp, repo string, oldScore *float64) error {
-	scores := make([]int, 101, 101)
-	statsBytes := mb.Get([]byte("stats"))
-	if statsBytes == nil {
-		statsBytes, _ = json.Marshal(scores)
-	}
-	err := json.Unmarshal(statsBytes, &scores)
-	if err != nil {
-		return err
-	}
-	scores[int(resp.Average*100)]++
-	if oldScore != nil {
-		scores[int(*oldScore*100)]--
-	}
-	newStats, err := json.Marshal(scores)
-	if err != nil {
-		return err
-	}
-	err = mb.Put([]byte("stats"), newStats)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func updateReposCount(mb *bolt.Bucket, resp checksResp, repo string) (err error) {
+func updateReposCount(mb *bolt.Bucket, repo string) (err error) {
 	log.Printf("New repo %q, adding to repo count...", repo)
 	totalInt := 0
 	total := mb.Get([]byte("total_repos"))
@@ -254,6 +129,9 @@ type recentItem struct {
 }
 
 func updateRecentlyViewed(mb *bolt.Bucket, repo string) error {
+	if mb == nil {
+		return fmt.Errorf("meta bucket not found")
+	}
 	b := mb.Get([]byte("recent"))
 	if b == nil {
 		b, _ = json.Marshal([]recentItem{})
@@ -283,4 +161,22 @@ func updateRecentlyViewed(mb *bolt.Bucket, repo string) error {
 	}
 
 	return nil
+}
+
+//func updateMetadata(tx *bolt.Tx, resp checksResp, repo string, isNewRepo bool, oldScore *float64) error {
+func updateMetadata(tx *bolt.Tx, resp checksResp, repo string, isNewRepo bool) error {
+	// fetch meta-bucket
+	mb := tx.Bucket([]byte(MetaBucket))
+	if mb == nil {
+		return fmt.Errorf("high score bucket not found")
+	}
+	// update total repos count
+	if isNewRepo {
+		err := updateReposCount(mb, repo)
+		if err != nil {
+			return err
+		}
+	}
+
+	return updateHighScores(mb, resp, repo)
 }

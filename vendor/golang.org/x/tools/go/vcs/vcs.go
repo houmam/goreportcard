@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-package vcs
+package vcs // import "golang.org/x/tools/go/vcs"
 
 import (
 	"bytes"
@@ -268,8 +268,8 @@ func (v *Cmd) Tags(dir string) ([]string, error) {
 	return tags, nil
 }
 
-// TagSync syncs the repo in dir to the named tag,
-// which either is a tag returned by tags or is v.TagDefault.
+// TagSync syncs the repo in dir to the named tag, which is either a
+// tag returned by Tags or the empty string (the default tag).
 // dir must be a valid VCS repo compatible with v and the tag must exist.
 func (v *Cmd) TagSync(dir, tag string) error {
 	if v.TagSyncCmd == "" {
@@ -344,10 +344,28 @@ func FromDir(dir, srcRoot string) (vcs *Cmd, root string, err error) {
 		return nil, "", fmt.Errorf("directory %q is outside source root %q", dir, srcRoot)
 	}
 
+	var vcsRet *Cmd
+	var rootRet string
+
+	origDir := dir
 	for len(dir) > len(srcRoot) {
 		for _, vcs := range vcsList {
-			if fi, err := os.Stat(filepath.Join(dir, "."+vcs.Cmd)); err == nil && fi.IsDir() {
-				return vcs, filepath.ToSlash(dir[len(srcRoot)+1:]), nil
+			if _, err := os.Stat(filepath.Join(dir, "."+vcs.Cmd)); err == nil {
+				root := filepath.ToSlash(dir[len(srcRoot)+1:])
+				// Record first VCS we find, but keep looking,
+				// to detect mistakes like one kind of VCS inside another.
+				if vcsRet == nil {
+					vcsRet = vcs
+					rootRet = root
+					continue
+				}
+				// Allow .git inside .git, which can arise due to submodules.
+				if vcsRet == vcs && vcs.Cmd == "git" {
+					continue
+				}
+				// Otherwise, we have one VCS inside a different VCS.
+				return nil, "", fmt.Errorf("directory %q uses %s, but parent %q uses %s",
+					filepath.Join(srcRoot, rootRet), vcsRet.Cmd, filepath.Join(srcRoot, root), vcs.Cmd)
 			}
 		}
 
@@ -360,7 +378,11 @@ func FromDir(dir, srcRoot string) (vcs *Cmd, root string, err error) {
 		dir = ndir
 	}
 
-	return nil, "", fmt.Errorf("directory %q is not using a known version control system", dir)
+	if vcsRet != nil {
+		return vcsRet, rootRet, nil
+	}
+
+	return nil, "", fmt.Errorf("directory %q is not using a known version control system", origDir)
 }
 
 // RepoRoot represents a version control system, a repo, and a root of
@@ -601,7 +623,7 @@ var vcsPaths = []*vcsPath{
 	// Github
 	{
 		prefix: "github.com/",
-		re:     `^(?P<root>github\.com/[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+)(/[A-Za-z0-9_.\-]+)*$`,
+		re:     `^(?P<root>github\.com/[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+)(/[\p{L}0-9_.\-]+)*$`,
 		vcs:    "git",
 		repo:   "https://{root}",
 		check:  noVCSSuffix,
@@ -622,6 +644,15 @@ var vcsPaths = []*vcsPath{
 		vcs:    "bzr",
 		repo:   "https://{root}",
 		check:  launchpadVCS,
+	},
+
+	// Git at OpenStack
+	{
+		prefix: "git.openstack.org",
+		re:     `^(?P<root>git\.openstack\.org/[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+)(\.git)?(/[A-Za-z0-9_.\-]+)*$`,
+		vcs:    "git",
+		repo:   "https://{root}",
+		check:  noVCSSuffix,
 	},
 
 	// General syntax for any server.

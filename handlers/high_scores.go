@@ -31,7 +31,7 @@ func HighScoresHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer db.Close()
 
-	count, scores, stats := 0, &scoreHeap{}, make([]int, 101, 101)
+	count, scores := 0, &ScoreHeap{}
 	err = db.View(func(tx *bolt.Tx) error {
 		hsb := tx.Bucket([]byte(MetaBucket))
 		if hsb == nil {
@@ -39,21 +39,12 @@ func HighScoresHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		scoreBytes := hsb.Get([]byte("scores"))
 		if scoreBytes == nil {
-			scoreBytes, err = json.Marshal([]scoreHeap{})
+			scoreBytes, err = json.Marshal([]ScoreHeap{})
 			if err != nil {
 				return err
 			}
 		}
 		json.Unmarshal(scoreBytes, scores)
-
-		statsBytes := hsb.Get([]byte("stats"))
-		if statsBytes == nil {
-			statsBytes, err = json.Marshal(stats)
-			if err != nil {
-				return err
-			}
-		}
-		json.Unmarshal(statsBytes, &stats)
 
 		heap.Init(scores)
 
@@ -72,7 +63,7 @@ func HighScoresHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	funcs := template.FuncMap{"add": add, "formatScore": formatScore}
-	t := template.Must(template.New("high_scores.html").Delims("[[", "]]").Funcs(funcs).ParseFiles("templates/high_scores.html"))
+	t := template.Must(template.New("high_scores.html").Delims("[[", "]]").Funcs(funcs).ParseFiles("templates/high_scores.html", "templates/footer.html"))
 
 	sortedScores := make([]scoreItem, len(*scores))
 	for i := range sortedScores {
@@ -81,7 +72,6 @@ func HighScoresHandler(w http.ResponseWriter, r *http.Request) {
 
 	t.Execute(w, map[string]interface{}{
 		"HighScores":           sortedScores,
-		"Stats":                stats,
 		"Count":                humanize.Comma(int64(count)),
 		"google_analytics_key": googleAnalyticsKey,
 	})

@@ -87,25 +87,10 @@
     </div>
   </section>
 
-  <footer class="footer">
-    <div class="container">
-      <div class="content has-text-centered">
-        <p>
-            <strong>Go Report Card</strong> by
-              <a href="https://twitter.com/shawnps">Shawn Smith</a> and
-              <a href="https://twitter.com/ironzeb">Herman Schaaf</a>.
-        </p>
-        <p>
-            <a href="https://m.do.co/c/cc772879eecd" class="dolink">
-                <img width="15%" src="/assets/do-proudly-hosted.png">
-            </a>
-        </p>
-      </div>
-    </div>
-  </footer>
+  [[ template "footer" . ]]
 
-  <script type="text/javascript" src="https://code.jquery.com/jquery-2.1.3.js"></script>
-  <script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/handlebars.js/2.0.0/handlebars.js"></script>
+  <script src="https://code.jquery.com/jquery-3.2.1.min.js" integrity="sha256-hwg4gsxgFZhOsEEamdOYGBf13FyQuiTwlAQgxVSNgt4=" crossorigin="anonymous"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/handlebars.js/4.0.11/handlebars.min.js" integrity="sha256-+JMHsXRyeTsws/tzbIh5YHQxRdKCuNjmvNcTFtY6DLc=" crossorigin="anonymous"></script>
   <script id="template-alert" type="text/x-handlebars-template">
       <div class="notification is-warning">
           <button class="delete"></button>
@@ -162,7 +147,7 @@
             <a href="{{this.file_url}}">{{this.filename}}</a>
             {{#each this.errors}}
               {{#if line_number}}
-              <li class="error"><a href="{{../../file_url}}#L{{this.line_number}}">Line {{this.line_number}}</a>: {{this.error_string}}</li>
+              <li class="error"><a href="{{../file_url}}#L{{this.line_number}}">Line {{this.line_number}}</a>: {{this.error_string}}</li>
               {{/if}}
             {{/each}}
             </ul>
@@ -174,7 +159,10 @@
     <hr>
   </script>
   <script id="template-lastrefresh" type="text/x-handlebars-template">
-  <p>Last refresh: <span title={{last_refresh}}>{{humanized_last_refresh}}</span></p>
+  <div title="{{formatted_last_refresh}}">
+    Last refresh:
+    <time datetime="{{last_refresh}}">{{humanized_last_refresh}}</time>
+  </div>
   <br>
   <p><a class="refresh-button button" href=""><strong>Refresh now</strong></a></p>
   </script>
@@ -214,7 +202,8 @@
       return percentage == false;
     });
 
-    var allowedLinkDomains = ["github.com/", "bitbucket.org/", "golang.org/"];
+    var allowedLinkDomains = ["https://github.com/", "https://bitbucket.org/",
+      "https://golang.org/", "https://go.googlesource.com/"];
 
     // initialize handlebars templates
     var templates = {};
@@ -235,8 +224,8 @@
         var $resultsDetails = $('.results-details').empty();
 
         for (var i = 0; i < allowedLinkDomains.length; i++) {
-          if (data.repo.indexOf(allowedLinkDomains[i]) == 0) {
-            data.link = "https://" + data.repo;
+          if (data.resolvedRepo.indexOf(allowedLinkDomains[i]) == 0) {
+            data.link = data.resolvedRepo;
           }
         }
         data.use_an = data.grade == "A" || data.grade == "A+";
@@ -289,7 +278,8 @@
       var $alert = $(html);
       $alert.find(".delete").on("click", function(){
           $(this).closest(".notification").remove();
-      })
+      });
+      $("#notifications").children().remove();
       $alert.hide();
       $alert.appendTo("#notifications");
       $alert.slideDown();
@@ -301,8 +291,14 @@
           url = $form.attr("action"),
           method = $form.attr("method"),
           data = {};
-      $("#check_form .button").addClass("is-loading");
-      $form.serializeArray().map(function(x){data[x.name] = x.value;});
+        $form.serializeArray().map(function(x){data[x.name] = x.value;});
+
+        if(!data["repo"]) {
+            alertMessage("Input cannot be empty. Please enter a valid repository path");
+            return false;
+        }
+
+        $("#check_form .button").addClass("is-loading");
       $.ajax({
           type: getRequest ? "GET" : "POST",
           url: url,

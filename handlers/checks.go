@@ -14,13 +14,21 @@ import (
 	"github.com/gojp/goreportcard/download"
 )
 
+type notFoundError struct {
+	repo string
+}
+
+func (n notFoundError) Error() string {
+	return fmt.Sprintf("%q not found in cache", n.repo)
+}
+
 func dirName(repo string) string {
-	return fmt.Sprintf("repos/src/%s", repo)
+	return fmt.Sprintf("_repos/src/%s", repo)
 }
 
 func getFromCache(repo string) (checksResp, error) {
 	// try and fetch from boltdb
-	db, err := bolt.Open(DBPath, 0600, &bolt.Options{Timeout: 1 * time.Second})
+	db, err := bolt.Open(DBPath, 0600, &bolt.Options{Timeout: 3 * time.Second})
 	if err != nil {
 		return checksResp{}, fmt.Errorf("failed to open bolt database during GET: %v", err)
 	}
@@ -34,7 +42,7 @@ func getFromCache(repo string) (checksResp, error) {
 		}
 		cached := b.Get([]byte(repo))
 		if cached == nil {
-			return fmt.Errorf("%q not found in cache", repo)
+			return notFoundError{repo}
 		}
 
 		err = json.Unmarshal(cached, &resp)
@@ -49,7 +57,8 @@ func getFromCache(repo string) (checksResp, error) {
 	}
 
 	resp.LastRefresh = resp.LastRefresh.UTC()
-	resp.HumanizedLastRefresh = humanize.Time(resp.LastRefresh.UTC())
+	resp.LastRefreshFormatted = resp.LastRefresh.Format(time.UnixDate)
+	resp.LastRefreshHumanized = humanize.Time(resp.LastRefresh.UTC())
 
 	return resp, nil
 }
@@ -71,8 +80,10 @@ type checksResp struct {
 	Files                int       `json:"files"`
 	Issues               int       `json:"issues"`
 	Repo                 string    `json:"repo"`
+	ResolvedRepo         string    `json:"resolvedRepo"`
 	LastRefresh          time.Time `json:"last_refresh"`
-	HumanizedLastRefresh string    `json:"humanized_last_refresh"`
+	LastRefreshFormatted string    `json:"formatted_last_refresh"`
+	LastRefreshHumanized string    `json:"humanized_last_refresh"`
 }
 
 func newChecksResp(repo string, forceRefresh bool) (checksResp, error) {
@@ -88,7 +99,7 @@ func newChecksResp(repo string, forceRefresh bool) (checksResp, error) {
 	}
 
 	// fetch the repo and grade it
-	repoRoot, err := download.Download(repo, "repos/src")
+	repoRoot, err := download.Download(repo, "_repos/src")
 	if err != nil {
 		return checksResp{}, fmt.Errorf("could not clone repo: %v", err)
 	}
@@ -142,15 +153,17 @@ func newChecksResp(repo string, forceRefresh bool) (checksResp, error) {
 		}(c)
 	}
 
+	t := time.Now().UTC()
 	resp := checksResp{
 		Repo:                 repo,
+		ResolvedRepo:         repoRoot.Repo,
 		Files:                len(filenames),
-		LastRefresh:          time.Now().UTC(),
-		HumanizedLastRefresh: humanize.Time(time.Now().UTC()),
+		LastRefresh:          t,
+		LastRefreshFormatted: t.Format(time.UnixDate),
+		LastRefreshHumanized: humanize.Time(t),
 	}
 
-	var total float64
-	var totalWeight float64
+	var total, totalWeight float64
 	var issues = make(map[string]bool)
 	for i := 0; i < len(checks); i++ {
 		s := <-ch
@@ -167,6 +180,66 @@ func newChecksResp(repo string, forceRefresh bool) (checksResp, error) {
 	resp.Average = total
 	resp.Issues = len(issues)
 	resp.Grade = PercentToGrade(total * 100)
+
+	respBytes, err := json.Marshal(resp)
+	if err != nil {
+		return checksResp{}, fmt.Errorf("could not marshal json: %v", err)
+	}
+
+	// write to boltdb
+	db, err := bolt.Open(DBPath, 0755, &bolt.Options{Timeout: 1 * time.Second})
+	if err != nil {
+		return checksResp{}, fmt.Errorf("could not open bolt db: %v", err)
+	}
+	defer db.Close()
+
+	// is this a new repo? if so, increase the count in the high scores bucket later
+	isNewRepo := false
+	var oldRepoBytes []byte
+	err = db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(RepoBucket))
+		if b == nil {
+			return fmt.Errorf("repo bucket not found")
+		}
+		oldRepoBytes = b.Get([]byte(repo))
+		return nil
+	})
+	if err != nil {
+		log.Println("ERROR getting repo from repo bucket:", err)
+	}
+
+	isNewRepo = oldRepoBytes == nil
+
+	// if this is a new repo, or the user force-refreshed, update the cache
+	if isNewRepo || forceRefresh {
+		err = db.Update(func(tx *bolt.Tx) error {
+			log.Printf("Saving repo %q to cache...", repo)
+
+			b := tx.Bucket([]byte(RepoBucket))
+			if b == nil {
+				return fmt.Errorf("repo bucket not found")
+			}
+
+			// save repo to cache
+			err = b.Put([]byte(repo), respBytes)
+			if err != nil {
+				return err
+			}
+
+			return updateMetadata(tx, resp, repo, isNewRepo)
+		})
+
+		if err != nil {
+			log.Println("Bolt writing error:", err)
+		}
+
+	}
+
+	db.Update(func(tx *bolt.Tx) error {
+		// fetch meta-bucket
+		mb := tx.Bucket([]byte(MetaBucket))
+		return updateRecentlyViewed(mb, repo)
+	})
 
 	return resp, nil
 }
