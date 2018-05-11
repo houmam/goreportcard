@@ -1,8 +1,11 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
+	"strconv"
+	"strings"
 
 	"github.com/gojp/goreportcard/check"
 	"github.com/gojp/goreportcard/handlers"
@@ -10,7 +13,36 @@ import (
 
 var allScores []handlers.Score
 
+type arrayFlags []string
+
+var checkFlags arrayFlags
+
+func (i *arrayFlags) String() string {
+	return fmt.Sprintf("%s", *i)
+}
+
+func (i *arrayFlags) Set(value string) error {
+	*i = append(*i, value)
+	return nil
+}
+
 func main() {
+	flag.Var(&checkFlags, "check", "Check Params.")
+	flag.Parse()
+
+	checkMap := map[string]float64{}
+
+	for _, f := range checkFlags {
+		split := strings.Split(f, "=")
+		ps, err := strconv.ParseFloat(split[1], 64)
+
+		if err != nil {
+			panic(fmt.Sprintf("%v is not a float (%s)", split[1], err.Error()))
+		}
+
+		checkMap[split[0]] = ps
+	}
+
 	dir := "."
 	filenames, skipped, err := check.GoFiles(dir)
 	if err != nil {
@@ -69,10 +101,32 @@ func main() {
 	}
 	total /= totalWeight
 
-	grade := handlers.PercentToGrade(total * 100)
-
+	allpass := true
 	for _, score := range allScores {
-		fmt.Printf("%s: %.2f%%\n", score.Name, score.Percentage*100)
+		pass := true
+
+		if score.Percentage*100 < checkMap[score.Name] {
+			pass = false
+			allpass = false
+		}
+
+		fmt.Printf("%s: %.2f%% (>= %.2f%% == %t)\n", score.Name, score.Percentage*100, checkMap[score.Name], pass)
+
+		if !pass {
+			fmt.Printf("\nIssues:\n")
+			for _, fs := range score.FileSummaries {
+				fmt.Printf("\t%s\n", fs.Filename)
+				for _, e := range fs.Errors {
+					fmt.Printf("\t\tLine Number: %d (%s)\n", e.LineNumber, e.ErrorString)
+				}
+			}
+		}
+		fmt.Println()
 	}
-	fmt.Println("Grade:", grade)
+
+	if allpass {
+		fmt.Println("Passed")
+	} else {
+		fmt.Println("Failed")
+	}
 }

@@ -8,7 +8,7 @@ type GoVet struct {
 
 // Name returns the name of the display name of the command
 func (g GoVet) Name() string {
-	return "go_vet"
+	return "govet"
 }
 
 // Weight returns the weight this check has in the overall average
